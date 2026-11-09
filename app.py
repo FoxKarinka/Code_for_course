@@ -30,6 +30,11 @@ button{background:#315a46;color:white;border:0;padding:10px 14px;cursor:pointer}
 input,textarea{padding:10px;border:1px solid #ccc;max-width:100%}form{margin:8px 0}
 .form{margin:32px 0;background:#eeeee7;padding:18px}.form input{margin:5px}
 .note{color:#777;font-size:13px}.recommend{background:#fffefa;padding:16px;margin:22px 0}
+.recommend-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px}
+.recommend-item{display:flex;gap:12px;align-items:flex-start;padding:12px;background:#f6f5f0}
+.recommend-item img{width:76px;height:76px;object-fit:cover;background:#e8e7df}
+.recommend-item p{margin:5px 0}.product-detail{max-width:760px;margin:30px auto;background:#fffefa;padding:24px}
+.product-detail img{width:min(100%,520px);max-height:420px;object-fit:contain;background:#f6f5f0}
 .cart-item{display:flex;justify-content:space-between;border-bottom:1px solid #ddd;padding:12px}
 .overlay{position:fixed;inset:0;display:grid;place-items:center;background:#0008;z-index:5}
 .popup{max-width:420px;margin:20px;padding:28px;background:#fffefa;text-align:center;box-shadow:0 12px 50px #0003}
@@ -54,12 +59,25 @@ input,textarea{padding:10px;border:1px solid #ccc;max-width:100%}form{margin:8px
 {% if items %}<form action="/checkout" method="post"><label>Спосіб оплати
 <select name="payment"><option value="тілом">Оплатити частиною тіла</option><option value="спогадом">Оплатити спогадом</option><option value="грошима">Оплатити грошима</option></select></label>
 <p class="note">Дякую, що обрали нас!</p><button>Підтвердити замовлення</button></form>{% else %}<p>Кошик поки порожній.</p>{% endif %}
+{% elif product_page %}
+<section class="product-detail">
+<p><a href="/">← До каталогу</a></p>
+{% if product.image %}<img src="{{ url_for('static',filename='uploads/'+product.image) }}" alt="{{ product.name }}">{% endif %}
+<p class="note">{{ product.category }}</p><h1>{{ product.name }}</h1><p class="price">{{ product.price }} ₿</p>
+<h2>Опис</h2><p>{{ product.description or "Опис товару поки не додано." }}</p>
+{% if product.tags %}<p class="note">Теги: {{ product.tags }}</p>{% endif %}
+<form action="/add/{{ product.id }}" method="post"><button>＋ До кошика</button></form>
+</section>
 {% else %}
 <p class="note">МАЛЕНЬКИЙ МАГАЗИН З МАЛЕНЬКИМИ ЦІНАМИ</p><h1>Послуги, які знаходять своїх.</h1>
 <p>{% if current_user and current_user.role=="seller" %}Додавайте власні товари й обирайте для них фото.{% else %}Знаходьте послуги до душі та отримуйте рекомендації.{% endif %}</p>
-{% if recs %}<section class="recommend"><h2>Може, це ваше?</h2><div class="grid">
-{% for label,p in recs %}<article><small>{{ label }}</small><br><a href="/view/{{ p.id }}">{{ p.name }}</a> · {{ p.price }} ₿</article>{% endfor %}
-</div></section>{% endif %}
+{% if recs %}<section class="recommend"><h2>Рекомендації для вас</h2>
+<p class="note">Підбір поєднує історію покупок, перегляди та схожість товарів.</p>
+<div class="recommend-grid">{% for rec in recs %}<article class="recommend-item">
+{% if rec.product.image %}<a href="/view/{{ rec.product.id }}"><img src="{{ url_for('static',filename='uploads/'+rec.product.image) }}" alt="{{ rec.product.name }}"></a>{% endif %}
+<div><small>{{ rec.reason }}</small><br><a href="/view/{{ rec.product.id }}"><b>{{ rec.product.name }}</b></a>
+<p>{{ rec.product.price }} ₿</p><form action="/add/{{ rec.product.id }}" method="post"><button>＋ До кошика</button></form></div>
+</article>{% endfor %}</div></section>{% endif %}
 <h2>Усі товари</h2><section class="grid">{% for p in products %}<article class="card">
 <a href="/view/{{ p.id }}">{% if p.image %}<img src="{{ url_for('static',filename='uploads/'+p.image) }}" alt="{{ p.name }}">{% else %}<div style="height:230px;background:#e8e7df"></div>{% endif %}</a>
 <p class="note">{{ p.category }}</p><a href="/view/{{ p.id }}"><b>{{ p.name }}</b></a><p class="price">{{ p.price }} ₿</p>
@@ -101,12 +119,13 @@ def connect():
         db.close()
 
 
-def page(cart_page=False, items=(), total=0, products=(), recs=()):
+def page(cart_page=False, items=(), total=0, products=(), recs=(),
+         product_page=False, product=None):
     return render_template_string(
         PAGE, cart_page=cart_page, items=items, total=total, products=products,
         recs=recs, count=sum(session.get("cart", {}).values()),
         current_user=current_user(), auth_prompt=session.pop("auth_prompt", False),
-        auth_page=None, error=None
+        auth_page=None, error=None, product_page=product_page, product=product
     )
 
 
@@ -114,7 +133,7 @@ def render_auth(mode, error=None):
     return render_template_string(
         PAGE, cart_page=False, items=(), total=0, products=(), recs=(),
         count=sum(session.get("cart", {}).values()), current_user=current_user(),
-        auth_prompt=False, auth_page=mode, error=error
+        auth_prompt=False, auth_page=mode, error=error, product_page=False, product=None
     )
 
 
@@ -151,7 +170,7 @@ def initialize_seller():
     ensure_seller()
 
 
-def apriori_pair_rules(transactions, min_support=0.01, min_confidence=0.1):
+def apriori_pair_rules(transactions, min_support=0.06, min_confidence=0.1):
     baskets = [set(transaction) for transaction in transactions if transaction]
     if not baskets:
         return []
@@ -184,63 +203,96 @@ def apriori_pair_rules(transactions, min_support=0.01, min_confidence=0.1):
     return rules
 
 
+def build_recommendations(products, transactions, viewed=(), limit=8):
+    catalog = {product["id"]: product for product in products}
+    baskets = [set(transaction) for transaction in transactions if transaction]
+    if not catalog or limit <= 0:
+        return []
+
+    viewed_ids = set(viewed)
+    history = [catalog[item_id] for item_id in viewed if item_id in catalog]
+    anchor = history[-1] if history else None
+    item_orders = Counter(item for basket in baskets for item in basket)
+    rule_by_product = {}
+    if anchor:
+        for rule in apriori_pair_rules(baskets):
+            if rule["antecedent"] != anchor["id"]:
+                continue
+            previous = rule_by_product.get(rule["consequent"])
+            if previous is None or (
+                rule["support"], rule["confidence"], rule["lift"]
+            ) > (previous["support"], previous["confidence"], previous["lift"]):
+                rule_by_product[rule["consequent"]] = rule
+
+    history_categories = Counter(item["category"] for item in history)
+    history_tags = Counter(
+        tag.strip().casefold()
+        for item in history
+        for tag in (item["tags"] or "").split(",")
+        if tag.strip()
+    )
+    scored = []
+    transaction_count = len(baskets)
+    for product in catalog.values():
+        product_id = product["id"]
+        if product_id in viewed_ids:
+            continue
+
+        score = 0.0
+        reasons = []
+        rule = rule_by_product.get(product_id)
+        if rule:
+            score += (
+                2 * rule["confidence"]
+                + rule["support"]
+                + 0.1 * min(rule["lift"], 4)
+            )
+            reasons.append("Купують разом")
+
+        category_matches = history_categories[product["category"]]
+        tags = {
+            tag.strip().casefold()
+            for tag in (product["tags"] or "").split(",")
+            if tag.strip()
+        }
+        tag_matches = sum(history_tags[tag] for tag in tags)
+        if category_matches or tag_matches:
+            score += 0.35 * category_matches + 0.05 * tag_matches
+            reasons.append("Схожий товар")
+
+        popularity = item_orders[product_id] / transaction_count if transaction_count else 0
+        score += 0.2 * popularity
+        if popularity and not reasons:
+            reasons.append("Популярне")
+        if not reasons:
+            reasons.append("Може зацікавити")
+
+        scored.append({
+            "product": product,
+            "reason": " · ".join(reasons),
+            "score": score,
+            "orders": item_orders[product_id],
+        })
+
+    return sorted(
+        scored,
+        key=lambda rec: (rec["score"], rec["orders"], rec["product"]["id"]),
+        reverse=True,
+    )[:limit]
+
+
 @app.get("/")
 def home():
     with connect() as db:
         products = db.execute("SELECT * FROM products ORDER BY id DESC").fetchall()
-        anchor = session.get("viewed", [None])[-1]
-        source = next((p for p in products if p["id"] == anchor), None)
-        similar = max(
-            (p for p in products if source and p["id"] != anchor),
-            key=lambda p: (3 * (p["category"] == source["category"]) +
-                           len(set(p["tags"].split(",")) & set(source["tags"].split(",")))),
-            default=None,
-        )
-        if similar and similar["category"] != source["category"] and not (
-            set(similar["tags"].split(",")) & set(source["tags"].split(","))
-        ):
-            similar = None
         transactions = {}
         for order_id, product_id in db.execute(
             "SELECT order_id,product_id FROM purchases"
         ):
             transactions.setdefault(order_id, set()).add(product_id)
-        rules = apriori_pair_rules(transactions.values())
-        anchor_rules = sorted(
-            (rule for rule in rules if rule["antecedent"] == anchor),
-            key=lambda rule: (rule["lift"], rule["confidence"], rule["support"]),
-            reverse=True,
+        recs = build_recommendations(
+            products, transactions.values(), session.get("viewed", ())
         )
-        together_rule = next(
-            (rule for rule in anchor_rules
-             if rule["consequent"] not in {anchor, similar["id"] if similar else None}),
-            None,
-        )
-        together = next(
-            (product for product in products
-             if together_rule and product["id"] == together_rule["consequent"]),
-            None,
-        )
-        history = [p for p in products if p["id"] in session.get("viewed", [])]
-        favorite = max(
-            (p for p in products if p["id"] not in {anchor, similar["id"] if similar else None,
-                                                     together["id"] if together else None}),
-            key=lambda p: (sum(p["category"] == viewed["category"] for viewed in history),
-                           sum(tag in p["tags"].split(",") for viewed in history
-                               for tag in viewed["tags"].split(",")), p["id"]),
-            default=None,
-        )
-        if not favorite and not history:
-            favorite = next((p for p in products if p["id"] != anchor), None)
-    together_label = "Купують разом"
-    if together_rule:
-        together_label += (
-            f" · support {together_rule['support']:.0%}, "
-            f"confidence {together_rule['confidence']:.0%}, "
-            f"lift {together_rule['lift']:.2f}"
-        )
-    recs = [(label, product) for label, product in
-            (("Схожі", similar), (together_label, together), ("Для вас", favorite)) if product]
     return page(products=products, recs=recs)
 
 
@@ -325,9 +377,15 @@ def checkout():
 
 @app.get("/view/<int:product_id>")
 def view_product(product_id):
+    with connect() as db:
+        product = db.execute(
+            "SELECT * FROM products WHERE id=?", (product_id,)
+        ).fetchone()
+    if not product:
+        abort(404)
     viewed = session.get("viewed", [])
     session["viewed"] = (viewed + [product_id])[-20:]
-    return redirect(url_for("home"))
+    return page(product_page=True, product=product)
 
 
 @app.post("/delete/<int:product_id>")
